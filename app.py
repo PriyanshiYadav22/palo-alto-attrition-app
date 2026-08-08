@@ -1,23 +1,23 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import joblib
 import plotly.express as px
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from imblearn.pipeline import Pipeline as ImbPipeline
+from imblearn.over_sampling import SMOTE
+from xgboost import XGBClassifier
 
-# Page Setup
+# Page Configuration
 st.set_page_config(
     page_title="Palo Alto Networks - Attrition Intelligence",
     page_icon="🛡️",
     layout="wide"
 )
 
-# Asset Loading Functions
-@st.cache_resource
-def load_model():
-    return joblib.load('attrition_model.pkl')
-
+# Load and Preprocess Dataset
 @st.cache_data
-def load_data():
+def load_and_preprocess_data():
     df = pd.read_csv('Palo Alto Networks.csv')
     if df['Attrition'].dtype == object:
         df['Attrition'] = df['Attrition'].map({'Yes': 1, 'No': 0})
@@ -33,12 +33,46 @@ def load_data():
     )
     return df
 
-model = load_model()
-df = load_data()
+# Train and Cache Model in Memory (No pickle/joblib required)
+@st.cache_resource
+def train_model(df):
+    X = df.drop(columns=['Attrition'])
+    y = df['Attrition']
 
-# Model Predictions & Scoring
-X = df.drop(columns=['Attrition'], errors='ignore')
-df['Attrition_Probability'] = model.predict_proba(X)[:, 1]
+    cat_cols = X.select_dtypes(include=['object', 'category']).columns.tolist()
+    num_cols = X.select_dtypes(include=['int64', 'float64']).columns.tolist()
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ('num', StandardScaler(), num_cols),
+            ('cat', OneHotEncoder(handle_unknown='ignore', drop='first'), cat_cols)
+        ]
+    )
+
+    pipeline = ImbPipeline([
+        ('preprocessor', preprocessor),
+        ('smote', SMOTE(random_state=42)),
+        ('classifier', XGBClassifier(
+            n_estimators=100,
+            learning_rate=0.05,
+            max_depth=4,
+            eval_metric='logloss',
+            random_state=42
+        ))
+    ])
+
+    pipeline.fit(X, y)
+    return pipeline
+
+# Load Data and Train Model
+df = load_and_preprocess_data()
+
+with st.spinner("Initializing Predictive Engine..."):
+    model = train_model(df)
+
+# Inference Generation
+X_feat = df.drop(columns=['Attrition'], errors='ignore')
+df['Attrition_Probability'] = model.predict_proba(X_feat)[:, 1]
 
 df['Risk_Category'] = pd.cut(
     df['Attrition_Probability'],
@@ -46,11 +80,11 @@ df['Risk_Category'] = pd.cut(
     labels=['Low Risk', 'Medium Risk', 'High Risk']
 )
 
-# Header Section
+# Header
 st.title("🛡️ Employee Attrition Prediction & Risk Scoring System")
 st.caption("Palo Alto Networks - ML-Driven Workforce Retention Portal")
 
-# Sidebar Filters
+# Sidebar Filter
 st.sidebar.header("Filter Analytics")
 dept_filter = st.sidebar.multiselect(
     "Select Department:",
@@ -60,7 +94,7 @@ dept_filter = st.sidebar.multiselect(
 
 filtered_df = df[df['Department'].isin(dept_filter)]
 
-# Dashboard Navigation Tabs
+# Tabs Interface
 tab1, tab2, tab3, tab4 = st.tabs([
     "📊 Executive Summary", 
     "👤 Employee Risk Profile", 
